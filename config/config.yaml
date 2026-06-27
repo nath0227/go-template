@@ -1,0 +1,28 @@
+server:
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_timeout: 10s
+
+log:
+  level: info
+  format: json
+
+db:
+  driver: postgres
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+
+cache:
+  addr: localhost:6379
+  db: 0
+  pool_size: 10
+
+kafka:
+  brokers:
+    - localhost:9092
+
+storage:
+  driver: aws
+  region: ap-southeast-1
