@@ -31,10 +31,11 @@ func main() {
 		log.Fatalf("logger init failed: %v", err)
 	}
 
-	db, err := pkgdb.NewGORM(cfg.DB)
+	database, err := pkgdb.New(cfg.DB)
 	if err != nil {
 		zap.L().Fatal("db init failed", zap.Error(err))
 	}
+	defer database.Close()
 
 	rdb, err := pkgcache.NewRedis(cfg.Cache)
 	if err != nil {
@@ -57,7 +58,10 @@ func main() {
 	}
 	defer consumer.Close()
 
-	repo := dbrepo.NewProductRepo(db, rdb, store)
+	if database.GORM == nil {
+		zap.L().Fatal("DB_BACKEND must be 'gorm' or 'both' for this service")
+	}
+	repo := dbrepo.NewProductRepo(database.GORM.Writer, database.GORM.Reader, rdb, store)
 	uc := productusecase.New(repo)
 
 	r := router.New(httphandler.NewProductHandler(uc))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -77,4 +78,16 @@ func (c *s3Client) PublicURL(bucket, key string) string {
 		return fmt.Sprintf("%s/%s", c.cfg.CDNBaseURL, key)
 	}
 	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucket, c.cfg.Region, key)
+}
+
+func (c *s3Client) SignURL(ctx context.Context, bucket, key string, ttl time.Duration) (string, error) {
+	pc := s3.NewPresignClient(c.client)
+	req, err := pc.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
 }

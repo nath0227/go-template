@@ -3,35 +3,47 @@ package kafka
 import (
 	"context"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 
 	"github.com/your-org/service-name/pkg/logger"
 )
 
-type MessageHandler func(ctx context.Context, msg kafka.Message) error
+type MessageHandler func(ctx context.Context, rec *kgo.Record) error
 
 type Consumer struct {
-	reader *kafka.Reader
+	client *kgo.Client
 	chain  *interceptorChain
 }
 
 func NewConsumer(cfg KafkaConfig, interceptors ...Interceptor) (*Consumer, error) {
-	dialer, err := buildDialer(cfg)
+	authOpts, err := buildAuthOpts(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	rcfg := kafka.ReaderConfig{
-		Brokers:        cfg.Brokers,
-		Topic:          cfg.ConsumerTopic,
-		GroupID:        cfg.ConsumerGroupID,
-		MinBytes:       cfg.ConsumerMinBytes,
-		MaxBytes:       cfg.ConsumerMaxBytes,
-		CommitInterval: cfg.ConsumerCommitInterval,
+	opts := []kgo.Opt{
+		kgo.SeedBrokers(cfg.Brokers...),
+		kgo.ConsumeTopics(cfg.ConsumerTopic),
+		kgo.ConsumerGroup(cfg.ConsumerGroupID),
+		kgo.Balancers(cfg.balancers()...),
+		kgo.ConsumeResetOffset(cfg.resetOffset()),
+		kgo.FetchMinBytes(int32(cfg.ConsumerMinBytes)),
+		kgo.FetchMaxBytes(int32(cfg.ConsumerMaxBytes)),
+		kgo.FetchMaxWait(cfg.ConsumerMaxWait),
+		kgo.SessionTimeout(cfg.ConsumerSessionTimeout),
+		kgo.HeartbeatInterval(cfg.ConsumerHeartbeatInterval),
+		kgo.RebalanceTimeout(cfg.ConsumerRebalanceTimeout),
+		kgo.DisableAutoCommit(),
 	}
-	if dialer != nil {
-		rcfg.Dialer = dialer
+	if cfg.ConsumerRack != "" {
+		opts = append(opts, kgo.Rack(cfg.ConsumerRack))
+	}
+	opts = append(opts, authOpts...)
+
+	client, err := kgo.NewClient(opts...)
+	if err != nil {
+		return nil, err
 	}
 
 	zap.L().Info("kafka consumer created",
@@ -39,47 +51,51 @@ func NewConsumer(cfg KafkaConfig, interceptors ...Interceptor) (*Consumer, error
 		zap.String("group", cfg.ConsumerGroupID),
 		zap.String("auth", string(cfg.Auth)),
 	)
-	return &Consumer{reader: kafka.NewReader(rcfg), chain: newChain(interceptors)}, nil
+	return &Consumer{client: client, chain: newChain(interceptors)}, nil
 }
 
 func (c *Consumer) Run(ctx context.Context, handler MessageHandler) {
 	for {
-		msg, err := c.reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
+		fetches := c.client.PollFetches(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		fetches.EachError(func(topic string, partition int32, err error) {
+			logger.FromContext(ctx).Error("kafka fetch error",
+				zap.String("topic", topic),
+				zap.Int32("partition", partition),
+				zap.Error(err),
+			)
+		})
+
+		fetches.EachRecord(func(rec *kgo.Record) {
+			rctx := injectTIDFromHeaders(ctx, rec.Headers)
+
+			if err := c.chain.Before(rctx, rec); err != nil {
 				return
 			}
-			logger.FromContext(ctx).Error("kafka fetch message failed", zap.Error(err))
-			continue
-		}
 
-		// Propagate tid from Kafka message headers into the context
-		ctx = injectTIDFromHeaders(ctx, msg.Headers)
+			handlerErr := handler(rctx, rec)
+			c.chain.After(rctx, rec, handlerErr)
 
-		if err := c.chain.Before(ctx, &msg); err != nil {
-			continue
-		}
+			if handlerErr != nil {
+				logger.FromContext(rctx).Error("kafka message handler failed", zap.Error(handlerErr))
+				return
+			}
 
-		handlerErr := handler(ctx, msg)
-		c.chain.After(ctx, &msg, handlerErr)
-
-		if handlerErr != nil {
-			logger.FromContext(ctx).Error("kafka message handler failed", zap.Error(handlerErr))
-			continue
-		}
-
-		if err := c.reader.CommitMessages(ctx, msg); err != nil {
-			logger.FromContext(ctx).Error("kafka commit message failed", zap.Error(err))
-		}
+			if err := c.client.CommitRecords(rctx, rec); err != nil {
+				logger.FromContext(rctx).Error("kafka commit failed", zap.Error(err))
+			}
+		})
 	}
 }
 
 func (c *Consumer) Close() error {
-	return c.reader.Close()
+	c.client.Close()
+	return nil
 }
 
-// injectTIDFromHeaders reads the "tid" Kafka header and injects it into ctx.
-func injectTIDFromHeaders(ctx context.Context, headers []kafka.Header) context.Context {
+func injectTIDFromHeaders(ctx context.Context, headers []kgo.RecordHeader) context.Context {
 	for _, h := range headers {
 		if h.Key == logger.TIDKey && len(h.Value) > 0 {
 			return logger.WithTID(ctx, string(h.Value))

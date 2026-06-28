@@ -3,16 +3,16 @@ package kafka
 import (
 	"context"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 
 	"github.com/your-org/service-name/pkg/logger"
 )
 
-// Interceptor allows hooking before/after every Kafka message send or receive.
+// Interceptor allows hooking before/after every Kafka record send or receive.
 type Interceptor interface {
-	Before(ctx context.Context, msg *kafka.Message) error
-	After(ctx context.Context, msg *kafka.Message, err error)
+	Before(ctx context.Context, rec *kgo.Record) error
+	After(ctx context.Context, rec *kgo.Record, err error)
 }
 
 type interceptorChain struct {
@@ -23,11 +23,11 @@ func newChain(interceptors []Interceptor) *interceptorChain {
 	return &interceptorChain{interceptors: interceptors}
 }
 
-func (c *interceptorChain) Before(ctx context.Context, msg *kafka.Message) error {
+func (c *interceptorChain) Before(ctx context.Context, rec *kgo.Record) error {
 	for _, i := range c.interceptors {
-		if err := i.Before(ctx, msg); err != nil {
+		if err := i.Before(ctx, rec); err != nil {
 			logger.FromContext(ctx).Error("kafka interceptor before failed",
-				zap.String("topic", msg.Topic),
+				zap.String("topic", rec.Topic),
 				zap.Error(err),
 			)
 			return err
@@ -36,8 +36,8 @@ func (c *interceptorChain) Before(ctx context.Context, msg *kafka.Message) error
 	return nil
 }
 
-func (c *interceptorChain) After(ctx context.Context, msg *kafka.Message, err error) {
+func (c *interceptorChain) After(ctx context.Context, rec *kgo.Record, err error) {
 	for _, i := range c.interceptors {
-		i.After(ctx, msg, err)
+		i.After(ctx, rec, err)
 	}
 }

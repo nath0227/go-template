@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	cos "github.com/tencentyun/cos-go-sdk-v5"
 	"go.uber.org/zap"
@@ -55,4 +56,14 @@ func (c *cosClient) PublicURL(bucket, key string) string {
 		return fmt.Sprintf("%s/%s", c.cfg.CDNBaseURL, key)
 	}
 	return fmt.Sprintf("https://%s.cos.%s.myqcloud.com/%s", bucket, c.cfg.Region, key)
+}
+
+func (c *cosClient) SignURL(ctx context.Context, bucket, key string, ttl time.Duration) (string, error) {
+	u, err := c.clientFor(bucket).Object.GetPresignedURL(
+		ctx, http.MethodPut, key, c.cfg.AccessKeyID, c.cfg.SecretAccessKey, ttl, nil,
+	)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }

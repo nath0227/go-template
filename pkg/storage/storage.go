@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 )
 
 type ObjectStorage interface {
@@ -11,6 +12,8 @@ type ObjectStorage interface {
 	Download(ctx context.Context, bucket, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, bucket, key string) error
 	PublicURL(bucket, key string) string
+	// SignURL returns a presigned PUT URL that allows direct client upload without credentials.
+	SignURL(ctx context.Context, bucket, key string, ttl time.Duration) (string, error)
 }
 
 type StorageConfig struct {

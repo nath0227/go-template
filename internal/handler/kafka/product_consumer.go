@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 
 	"github.com/your-org/service-name/internal/domain/entity"
@@ -20,10 +20,10 @@ func NewProductConsumer(uc *product.Usecase) *ProductConsumer {
 	return &ProductConsumer{uc: uc}
 }
 
-func (c *ProductConsumer) Handle(ctx context.Context, msg kafka.Message) error {
+func (c *ProductConsumer) Handle(ctx context.Context, rec *kgo.Record) error {
 	log := logger.FromContext(ctx)
 	var p entity.Product
-	if err := json.Unmarshal(msg.Value, &p); err != nil {
+	if err := json.Unmarshal(rec.Value, &p); err != nil {
 		log.Error("product consumer: unmarshal failed", zap.Error(err))
 		return err
 	}

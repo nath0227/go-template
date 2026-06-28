@@ -9,7 +9,16 @@ log:
   format: json
 
 db:
+  backend: gorm
   driver: postgres
+  writer:
+    host: localhost:5432
+    ssl_mode: disable
+    application_name: my-service-writer
+  reader:
+    host: ""              # leave empty to fall back to writer
+    ssl_mode: disable
+    application_name: my-service-reader
   max_open_conns: 25
   max_idle_conns: 5
   conn_max_lifetime: 5m

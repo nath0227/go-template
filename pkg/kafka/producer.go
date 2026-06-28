@@ -3,58 +3,85 @@ package kafka
 import (
 	"context"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 
 	"github.com/your-org/service-name/pkg/logger"
 )
 
 type Producer struct {
-	writer *kafka.Writer
+	client *kgo.Client
+	async  bool
 	chain  *interceptorChain
 }
 
 func NewProducer(cfg KafkaConfig, interceptors ...Interceptor) (*Producer, error) {
-	transport, err := buildTransport(cfg)
+	authOpts, err := buildAuthOpts(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	w := &kafka.Writer{
-		Addr:         kafka.TCP(cfg.Brokers...),
-		Topic:        cfg.ProducerTopic,
-		BatchSize:    cfg.ProducerBatchSize,
-		BatchTimeout: cfg.ProducerBatchTimeout,
-		Balancer:     &kafka.LeastBytes{},
+	opts := []kgo.Opt{
+		kgo.SeedBrokers(cfg.Brokers...),
+		kgo.DefaultProduceTopic(cfg.ProducerTopic),
+		kgo.RecordPartitioner(cfg.partitioner()),
+		kgo.RequiredAcks(cfg.acks()),
+		kgo.ProducerBatchCompression(cfg.compressionCodec()),
+		kgo.ProducerBatchMaxBytes(int32(cfg.ProducerBatchBytes)),
+		kgo.ProducerLinger(cfg.ProducerBatchTimeout),
+		kgo.ProduceRequestTimeout(cfg.ProducerWriteTimeout),
+		kgo.RecordRetries(cfg.ProducerMaxAttempts),
 	}
-	if transport != nil {
-		w.Transport = transport
+	opts = append(opts, authOpts...)
+
+	client, err := kgo.NewClient(opts...)
+	if err != nil {
+		return nil, err
 	}
 
 	zap.L().Info("kafka producer created",
 		zap.String("topic", cfg.ProducerTopic),
 		zap.String("auth", string(cfg.Auth)),
 	)
-	return &Producer{writer: w, chain: newChain(interceptors)}, nil
+	return &Producer{client: client, async: cfg.ProducerAsync, chain: newChain(interceptors)}, nil
 }
 
-func (p *Producer) WriteMessages(ctx context.Context, msgs ...kafka.Message) error {
+func (p *Producer) Produce(ctx context.Context, recs ...*kgo.Record) error {
 	log := logger.FromContext(ctx)
-	for i := range msgs {
-		if err := p.chain.Before(ctx, &msgs[i]); err != nil {
+	for _, rec := range recs {
+		if err := p.chain.Before(ctx, rec); err != nil {
 			return err
 		}
 	}
-	err := p.writer.WriteMessages(ctx, msgs...)
-	if err != nil {
-		log.Error("kafka write messages failed", zap.Error(err))
+
+	if p.async {
+		for _, rec := range recs {
+			r := rec
+			p.client.Produce(ctx, r, func(rec *kgo.Record, err error) {
+				if err != nil {
+					log.Error("kafka produce failed", zap.Error(err))
+				}
+				p.chain.After(ctx, rec, err)
+			})
+		}
+		return nil
 	}
-	for i := range msgs {
-		p.chain.After(ctx, &msgs[i], err)
+
+	results := p.client.ProduceSync(ctx, recs...)
+	var firstErr error
+	for _, res := range results {
+		if res.Err != nil {
+			log.Error("kafka produce failed", zap.Error(res.Err))
+			if firstErr == nil {
+				firstErr = res.Err
+			}
+		}
+		p.chain.After(ctx, res.Record, res.Err)
 	}
-	return err
+	return firstErr
 }
 
 func (p *Producer) Close() error {
-	return p.writer.Close()
+	p.client.Close()
+	return nil
 }

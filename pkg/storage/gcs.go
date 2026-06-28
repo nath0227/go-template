@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"go.uber.org/zap"
@@ -53,4 +54,13 @@ func (c *gcsClient) PublicURL(bucket, key string) string {
 		return fmt.Sprintf("%s/%s", c.cfg.CDNBaseURL, key)
 	}
 	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucket, key)
+}
+
+func (c *gcsClient) SignURL(_ context.Context, bucket, key string, ttl time.Duration) (string, error) {
+	// Requires signing credentials: set STORAGE_CREDENTIALS_FILE to a service account key,
+	// or run on GCE/Cloud Run where the metadata server provides an identity with signBlob permission.
+	return c.client.Bucket(bucket).SignedURL(key, &storage.SignedURLOptions{
+		Method:  "PUT",
+		Expires: time.Now().Add(ttl),
+	})
 }
